@@ -1,0 +1,9 @@
+data/
+*.tif
+*.tiff
+*.npy
+*.h5
+.venv/
+__pycache__/
+.vscode/
+out/
