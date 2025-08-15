@@ -1,35 +1,35 @@
-# How to use
-Running demo.py to visualize STAAR-FM running at multiple threshold values.
+# How to Use STAAR-FM
 
+## Running the Demo
+Run `demo.py` to visualize STAAR-FM running at multiple threshold values.
 
-Initialize the adaptive DEM with:
-
+## Initialize the Adaptive DEM
+```python
 dynamic_dem = DynamicResolutionDEM(dem_path, scales, window)
+```
 
-
-Generate an example roughness heuristic:
-
+## Generate Example Roughness Heuristic
+```python
 downscaled_dem = dynamic_dem_low.data[::scales[-1], ::scales[-1]]
-
 roughness_low = roughness_index(downscaled_dem)
+```
 
-
-Initialize STAAR-FM flow direction calculation:
-
+## Initialize STAAR-FM Flow Direction Calculation
+```python
 staar = STAAR(dynamic_dem)
+```
 
-To calculate flow accumulation:
-
+## Calculate Flow Accumulation
+```python
 staar.calculate_flow_accumulation()
+```
 
-To extract flow network:
-
+## Extract Flow Network
+```python
 staar.extract_flow_network()
+```
 
-
-flow direction matrix: staar.fdir
-
-flow accumulation matrix: staar.facc
-
-flow network: staar.flow_network
-
+## Access Results
+- **Flow direction matrix**: `staar.fdir`
+- **Flow accumulation matrix**: `staar.facc`
+- **Flow network**: `staar.flow_network`
