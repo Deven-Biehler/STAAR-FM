@@ -2,8 +2,8 @@ import numpy as np
 import rasterio
 from time import time
 
-from STAAR import STAAR, DynamicResolutionDEM
-from dem_plotting import plot_flow_accumulation, plot_flow_direction, plot_flow_network
+from STAAR import STAAR_Grid, STAAR_FlowModeling, STAAR_Plotter
+from dem_plotting import plot_flow_accumulation, plot_flow_direction
 from pysheds.grid import Grid
 from utils import roughness_index
 
@@ -68,6 +68,7 @@ def main(threshold):
     threshold_high = [0]
     patch_size = 1
     with rasterio.open(dem_path) as src:
+        transform = src.transform
         height, width = src.height, src.width
         window = rasterio.windows.Window(height * (.5 - patch_size/200), width * (.5 - patch_size/200), height * patch_size/100, width * patch_size/100) # Grab a chunk out of middle
         # Crop window to multiple of 3
@@ -76,20 +77,23 @@ def main(threshold):
     # --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     # Method
     # --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-    dynamic_dem_low = DynamicResolutionDEM(dem_path, scales, window)
+    # Low Resolution test
+    dynamic_dem_low = STAAR_Grid(dem_path, scales, window)
     downscaled_dem = dynamic_dem_low.data[::scales[-1], ::scales[-1]]
     roughness_low = roughness_index(downscaled_dem)
     dynamic_dem_low.calculate_resolution_map(roughness_low, threshold_low)
-    staar_low = STAAR(dynamic_dem_low)
+    staar_low = STAAR_FlowModeling(dynamic_dem_low)
+    staar_low.calculate_flow_direction()
     staar_low.calculate_flow_accumulation()
     staar_low.extract_flow_network()
 
-
-    dynamic_dem_high = DynamicResolutionDEM(dem_path, scales, window)
+    # High Resolution test
+    dynamic_dem_high = STAAR_Grid(dem_path, scales, window)
     downscaled_dem = dynamic_dem_high.data[::scales[-1], ::scales[-1]]
     roughness_high = roughness_index(downscaled_dem)
     dynamic_dem_high.calculate_resolution_map(roughness_high, threshold_high)
-    staar_high = STAAR(dynamic_dem_high)
+    staar_high = STAAR_FlowModeling(dynamic_dem_high)
+    staar_high.calculate_flow_direction()
     staar_high.calculate_flow_accumulation()
     staar_high.extract_flow_network()
 
@@ -102,14 +106,16 @@ def main(threshold):
     print("Threshold:", threshold)
 
     print("STAAR Flow (low-res):")
-    plot_flow_direction(staar_low.flow_dir)
-    plot_flow_accumulation(staar_low.facc)
-    plot_flow_network(staar_low.flow_network, color='red')
+    STAAR_plotter = STAAR_Plotter(staar_low)
+    STAAR_plotter.plot_flow_direction(staar_low.flow_dir)
+    STAAR_plotter.plot_flow_accumulation()
+    STAAR_plotter.plot_flow_network(staar_low.flow_network, color='red')
 
     print("STAAR Flow (high-res):")
-    plot_flow_direction(staar_high.flow_dir)
-    plot_flow_accumulation(staar_high.facc)
-    plot_flow_network(staar_high.flow_network, color='blue')
+    STAAR_plotter = STAAR_Plotter(staar_high)
+    STAAR_plotter.plot_flow_direction(staar_high.flow_dir)
+    STAAR_plotter.plot_flow_accumulation()
+    STAAR_plotter.plot_flow_network(staar_high.flow_network, color='blue')
 
     print("PySheds Flow:")
     plot_flow_direction(fdir)

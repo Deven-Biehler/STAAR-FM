@@ -3,23 +3,6 @@ import numpy as np
 import os
 from matplotlib.colors import LogNorm
 
-def plot_dem(dem, title='Digital Elevation Model', cmap='terrain', save=False, filename='dem_plot.png'):
-    plt.figure(figsize=(12, 8))
-    dem = np.clip(dem, np.percentile(dem, 1), np.percentile(dem, 98))
-    plt.imshow(dem, cmap=cmap)
-    plt.colorbar(label='Elevation (m)')
-    plt.title(title)
-    plt.xlabel('X coordinate')
-    plt.ylabel('Y coordinate')
-    
-    if save:
-        os.makedirs("plots", exist_ok=True)
-        plt.savefig(f"plots/{filename}", dpi=300, bbox_inches='tight')
-    
-    plt.show()
-
-
-
 def plot_flow_accumulation(flow_data, title='Flow Accumulation', cmap='Blues',
                            save=False, filename='flow_accumulation_plot.png',
                            use_log_scale=True, clip_percentile=99):
