@@ -10,42 +10,41 @@ from pysheds.grid import Grid
 
 class STAAR_Grid:
     """Class to handle dynamic resolution DEM and associated data."""
-    def __init__(self, dem, scales, window):
-        self.dem = dem
+
+    def __init__(self, dem_path, scales, window, affine, crs):
+        self.dem_path = dem_path
         self.scales = scales
         self.window = window
+        self.affine = affine
+        self.crs = crs
 
         self.resolution_map = None
-        self.data = None
-        self.crs = None
-        self.transform = None
+        self.dem = None
         self.dem_grid = None
         self.load_dem()
     
     def load_dem(self):
         self.all_data = []
-        with rasterio.open(self.dem) as src:
-            geographic_window = rasterio.windows.bounds(self.window, src.transform)
-            self.crs = src.crs
-            self.transform = src.transform
-            # Apply transform to window
-            self.transform = rasterio.windows.transform(self.window, src.transform)
-            self.data = src.read(1, window=self.window)
+
+        self.dem_grid = Grid.from_raster(self.dem_path, window=self.window, affine=self.affine)
+        dem_raster = self.dem_grid.read_raster(self.dem_path, window=self.window)
 
         # Pre-processing
-        self.dem_grid = Grid.from_raster(self.dem, window=geographic_window, affine=self.transform)
-        dem = self.dem_grid.read_raster(self.dem, window=geographic_window)
-        pit_filled_dem = self.dem_grid.fill_pits(dem)
+        pit_filled_dem = self.dem_grid.fill_pits(dem_raster)
         flooded_dem = self.dem_grid.fill_depressions(pit_filled_dem)
         inflated_dem = self.dem_grid.resolve_flats(flooded_dem)
-        self.data = inflated_dem
+        self.dem = inflated_dem
 
     def calculate_resolution_map(self, heuristic_map, thresholds):
         """
         Calculate the resolution map based on the scales and the DEM data.
         The resolution map indicates which scale to use for each pixel in the DEM.
         """
-        self.resolution_map = np.zeros((self.data.shape[0] // self.scales[-1], self.data.shape[1] // self.scales[-1]), dtype=np.int32)
+        self.resolution_map = np.zeros((
+            self.dem.shape[0] // self.scales[-1], 
+            self.dem.shape[1] // self.scales[-1]), 
+            dtype=np.int32
+            )
         if heuristic_map.shape != self.resolution_map.shape:
             raise ValueError("Heuristic map shape must match the resolution map shape.")
         
@@ -59,7 +58,6 @@ class STAAR_Grid:
             self.resolution_map[mask] = scale
         # Ensure the resolution map is of type int32
         self.resolution_map = self.resolution_map.astype(np.int32)
-            
 
 
 class STAAR_FlowModeling:
@@ -72,7 +70,7 @@ class STAAR_FlowModeling:
         self.fdir_dtype = np.int32
         
         self.fdir = None
-        self.facc = None
+        self.facc_raster = None
         self.fdir_grid = None
         self.flow_network = None
 
@@ -98,14 +96,14 @@ class STAAR_FlowModeling:
                         [[1,-1], [1,0], [1,1]]])
         # Add padding to the data
         pad_width = max(self.staar_grid.scales) // 2 + 1  # Padding width for boundary handling
-        if np.issubdtype(self.staar_grid.data.dtype, np.integer):
-            max_val = np.iinfo(self.staar_grid.data.dtype).max
+        if np.issubdtype(self.staar_grid.dem.dtype, np.integer):
+            max_val = np.iinfo(self.staar_grid.dem.dtype).max
         else:
-            max_val = np.finfo(self.staar_grid.data.dtype).max
-        padded_data = np.pad(self.staar_grid.data, pad_width=pad_width, mode='constant', constant_values=max_val)
-        self.flow_dir = np.full((self.staar_grid.data.shape[0], self.staar_grid.data.shape[1]), -1, dtype=np.int32)
+            max_val = np.finfo(self.staar_grid.dem.dtype).max
+        padded_data = np.pad(self.staar_grid.dem, pad_width=pad_width, mode='constant', constant_values=max_val)
+        self.fdir = np.full((self.staar_grid.dem.shape[0], self.staar_grid.dem.shape[1]), -1, dtype=np.int32)
         # add padding to flow_dir
-        self.flow_dir = np.pad(self.flow_dir, pad_width=pad_width, mode='constant', constant_values=-1)
+        self.fdir = np.pad(self.fdir, pad_width=pad_width, mode='constant', constant_values=-1)
         d8_codes = np.array([[32, 64, 128],
                             [16,  -1,   1],
                             [ 8,  4,   2]])
@@ -157,36 +155,39 @@ class STAAR_FlowModeling:
                 offsets_flat = meshgrid_cache[scale] # (M*M, 2)
                 all_coords = center_coords[:, None, :] + offsets_flat[None, :, :] # Shape: (M, M*M, 2)
 
-                self.flow_dir[all_coords[:, :, 0].flatten(), all_coords[:, :, 1].flatten()] = d8_encoded
+                self.fdir[all_coords[:, :, 0].flatten(), all_coords[:, :, 1].flatten()] = d8_encoded
         print("STAAR flow_dir time: ", time.time() - start_time)
     
-    def get_pysheds_grid(self):
+    def get_fdir_grid(self):
         """Convert the flow direction to a PySheds Grid object by writing to a temporary file."""
+        if self.fdir is None:
+            raise ValueError("Flow direction must be calculated before creating the flow direction grid.")
         flow_dir_temp = "flow_dir_temp.tif"
 
         with rasterio.open(flow_dir_temp, 'w', driver='GTiff',
-                        height=self.flow_dir.shape[0],
-                        width=self.flow_dir.shape[1],
+                        height=self.fdir.shape[0],
+                        width=self.fdir.shape[1],
                         count=1, dtype=self.fdir_dtype,  # <-- use int32 for D8 codes
                         crs=self.staar_grid.crs,
-                        transform=self.staar_grid.transform,
+                        transform=self.staar_grid.affine,
                         nodata=self.nodata) as dst:     # <-- set nodata to an unused int value
-            dst.write(self.flow_dir.astype(self.fdir_dtype), 1)
+            dst.write(self.fdir.astype(self.fdir_dtype), 1)
 
-        self.fdir_grid = Grid.from_raster(flow_dir_temp)
-        self.fdir = self.fdir_grid.read_raster(data=flow_dir_temp, nodata=self.nodata, dtype=self.fdir_dtype)
-        return self.fdir_grid, self.fdir
+        fdir_grid = Grid.from_raster(flow_dir_temp)
+        fdir_raster = fdir_grid.read_raster(data=flow_dir_temp, nodata=self.nodata, dtype=self.fdir_dtype)
+        return fdir_grid, fdir_raster
 
     def calculate_flow_accumulation(self):
-        self.fdir_grid, self.fdir = self.get_pysheds_grid()
-        self.facc = self.fdir_grid.accumulation(self.fdir, nodata_in=self.nodata, nodata_out=self.nodata)
+        fdir_grid, fdir_raster = self.get_fdir_grid()
+        self.facc_raster = fdir_grid.accumulation(fdir_raster, nodata_in=self.nodata, nodata_out=self.nodata)
 
     def extract_flow_network(self):
-        if self.facc is None:
+        if self.facc_raster is None:
             raise ValueError("Flow accumulation must be calculated before extracting the flow network.")
         # Convert top 5% of flow accumulation to river network
-        mask = (self.facc > np.percentile(self.facc, 95))  # Boolean mask
-        self.flow_network = self.fdir_grid.extract_river_network(fdir=self.fdir, mask=mask)
+        mask = (self.facc_raster > np.percentile(self.facc_raster, 95))  # Boolean mask
+        fdir_grid, fdir_raster = self.get_fdir_grid()
+        self.flow_network = fdir_grid.extract_river_network(fdir=fdir_raster, mask=mask)
 
 class STAAR_Plotter:
     def __init__(self, staar_fm):
@@ -195,12 +196,14 @@ class STAAR_Plotter:
     def plot_flow_accumulation(self, use_log_scale=True, clip_percentile=99, 
                           save=False, filename='flow_accumulation.png'):
         """Plot flow accumulation using rasterio's built-in plotting."""
+        if self.staar_fm.facc_raster is None:
+            raise ValueError("Flow accumulation has not been calculated yet.")
         from rasterio.plot import show
         
         fig, ax = plt.subplots(figsize=(12, 8))
         
         # Prepare data
-        plot_data = self.staar_fm.facc.copy()
+        plot_data = self.staar_fm.facc_raster.copy()
         if use_log_scale:
             plot_data[plot_data <= 0] = 1
             norm = LogNorm(vmin=1, vmax=np.percentile(plot_data, clip_percentile))
@@ -208,7 +211,7 @@ class STAAR_Plotter:
             norm = None
         
         # Use rasterio's show with the grid's transform
-        im = show(plot_data, transform=self.staar_fm.fdir_grid.affine, ax=ax,
+        im = show(plot_data, transform=self.staar_fm.staar_grid.affine, ax=ax,
                 cmap='Blues', norm=norm)
         
         ax.set_xlabel('Longitude')
@@ -228,11 +231,13 @@ class STAAR_Plotter:
         plt.show()
 
 
-    def plot_flow_network(self, flow_network, output=None, color='blue'):
+    def plot_flow_network(self, save=None, color='blue'):
+        if self.staar_fm.flow_network is None:
+            raise ValueError("Flow network has not been extracted yet.")
         import matplotlib.pyplot as plt
 
         plt.figure(figsize=(10, 10))
-        for feature in flow_network['features']:
+        for feature in self.staar_fm.flow_network['features']:
             coords = feature['geometry']['coordinates']
             if feature['geometry']['type'] == 'LineString':
                 xs, ys = zip(*coords)
@@ -245,12 +250,14 @@ class STAAR_Plotter:
         plt.xlabel("Longitude")
         plt.ylabel("Latitude")
         plt.axis('equal')
-        if output is None:
+        if save is None:
             plt.show()
         else:
-            plt.savefig(output, bbox_inches='tight')
+            plt.savefig(save, bbox_inches='tight')
 
-    def plot_flow_direction(self, flow_dir, save=None):
+    def plot_flow_direction(self, save=None):
+        if self.staar_fm.fdir is None:
+            raise ValueError("Flow direction data is not available.")
         """
         Plot the flow direction map.
         """
@@ -258,7 +265,7 @@ class STAAR_Plotter:
         from mpl_toolkits.axes_grid1 import make_axes_locatable
     
         _, ax = plt.subplots(figsize=(12, 8))
-        im = show(flow_dir, transform=self.staar_fm.staar_grid.transform, ax=ax,
+        im = show(self.staar_fm.fdir, transform=self.staar_fm.staar_grid.affine, ax=ax,
                 cmap='jet', vmin=1, vmax=128)
         plt.title("Flow Direction Map")
         plt.xlabel('Longitude')

@@ -56,6 +56,15 @@ def run_pysheds_flow_accumulation(dem_path, window):
     acc = grid.accumulation(fdir, dirmap=dirmap, nodata_out=np.int64(-1))
     return fdir, acc
 
+def save_tif(array, path, transform, crs):
+    """Utility to save a single-band array as a GeoTIFF."""
+    with rasterio.open(path, 'w', driver='GTiff',
+                           height=array.shape[0], width=array.shape[1],
+                           count=1, dtype=array.dtype,
+                           crs=crs,
+                           transform=transform) as dst:
+        dst.write(array, 1)
+
 
 def main(threshold):
     # --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -66,56 +75,74 @@ def main(threshold):
     scales = [1, 3]  # Example scales
     threshold_low = [threshold]
     threshold_high = [0]
-    patch_size = 1
+    
     with rasterio.open(dem_path) as src:
-        transform = src.transform
-        height, width = src.height, src.width
-        window = rasterio.windows.Window(height * (.5 - patch_size/200), width * (.5 - patch_size/200), height * patch_size/100, width * patch_size/100) # Grab a chunk out of middle
-        # Crop window to multiple of 3
-        window = window.round(3)
+        # Define bounding box coordinates (lat/lon)
+        north = 7 + 3/60 + 16/3600  # 7°03'16"N
+        south = 6 + 3/60 + 16/3600  # 6°03'16"N
+        west = -(73 + 19/60 + 45/3600)  # 73°19'45"W
+        east = -(72 + 19/60 + 45/3600)  # 72°19'45"W
+        
+        # window = rasterio.windows.Window(height * (.5 - 1/200), width * (.5 - 1/200), height * 1/100, width * 1/100) # Orginal window from paper
+        window = rasterio.windows.from_bounds(west, south, east, north, src.transform)
+        window = window.round(scales[-1])
+        new_transform = rasterio.windows.transform(window, src.transform)
+        geographic_window = rasterio.windows.bounds(window, src.transform)
+        crs = src.crs
+        # Plot original DEM
+        dem = src.read(1, window=window)
+        rasterio.plot.show(dem, transform=new_transform)
+        save_tif(dem, "out/original_dem.tif", new_transform, crs)
 
     # --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     # Method
     # --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     # Low Resolution test
-    dynamic_dem_low = STAAR_Grid(dem_path, scales, window)
-    downscaled_dem = dynamic_dem_low.data[::scales[-1], ::scales[-1]]
+    dynamic_dem_low = STAAR_Grid(dem_path=dem_path, scales=scales, window=geographic_window, crs=crs, affine=new_transform)
+    downscaled_dem = dynamic_dem_low.dem[::scales[-1], ::scales[-1]]
     roughness_low = roughness_index(downscaled_dem)
     dynamic_dem_low.calculate_resolution_map(roughness_low, threshold_low)
     staar_low = STAAR_FlowModeling(dynamic_dem_low)
     staar_low.calculate_flow_direction()
     staar_low.calculate_flow_accumulation()
     staar_low.extract_flow_network()
+    save_tif(dynamic_dem_low.dem, "out/staar_low_dem.tif", dynamic_dem_low.affine, dynamic_dem_low.crs)
+    save_tif(staar_low.facc_raster, "out/staar_low_facc.tif", dynamic_dem_low.affine, dynamic_dem_low.crs)
+    save_tif(staar_low.fdir, "out/staar_low_fdir.tif", dynamic_dem_low.affine, dynamic_dem_low.crs)
+
 
     # High Resolution test
-    dynamic_dem_high = STAAR_Grid(dem_path, scales, window)
-    downscaled_dem = dynamic_dem_high.data[::scales[-1], ::scales[-1]]
+    dynamic_dem_high = STAAR_Grid(dem_path=dem_path, scales=scales, window=geographic_window, crs=crs, affine=new_transform)
+    downscaled_dem = dynamic_dem_high.dem[::scales[-1], ::scales[-1]]
     roughness_high = roughness_index(downscaled_dem)
     dynamic_dem_high.calculate_resolution_map(roughness_high, threshold_high)
     staar_high = STAAR_FlowModeling(dynamic_dem_high)
     staar_high.calculate_flow_direction()
     staar_high.calculate_flow_accumulation()
     staar_high.extract_flow_network()
+    save_tif(dynamic_dem_high.dem, "out/staar_high_dem.tif", dynamic_dem_high.affine, dynamic_dem_high.crs)
+    save_tif(staar_high.facc_raster, "out/staar_high_facc.tif", dynamic_dem_high.affine, dynamic_dem_high.crs)
+    save_tif(staar_high.fdir, "out/staar_high_fdir.tif", dynamic_dem_high.affine, dynamic_dem_high.crs)
 
     fdir, facc = run_pysheds_flow_accumulation(dem_path, window)
 
     # --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     # OUTPUT 
     # --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-    print("number of pixels:", dynamic_dem_high.data.size)
+    print("number of pixels:", dynamic_dem_high.dem.size)
     print("Threshold:", threshold)
 
     print("STAAR Flow (low-res):")
     STAAR_plotter = STAAR_Plotter(staar_low)
-    STAAR_plotter.plot_flow_direction(staar_low.flow_dir)
+    STAAR_plotter.plot_flow_direction()
     STAAR_plotter.plot_flow_accumulation()
-    STAAR_plotter.plot_flow_network(staar_low.flow_network, color='red')
+    STAAR_plotter.plot_flow_network(color='red')
 
     print("STAAR Flow (high-res):")
     STAAR_plotter = STAAR_Plotter(staar_high)
-    STAAR_plotter.plot_flow_direction(staar_high.flow_dir)
+    STAAR_plotter.plot_flow_direction()
     STAAR_plotter.plot_flow_accumulation()
-    STAAR_plotter.plot_flow_network(staar_high.flow_network, color='blue')
+    STAAR_plotter.plot_flow_network(color='blue')
 
     print("PySheds Flow:")
     plot_flow_direction(fdir)
@@ -131,7 +158,7 @@ def main(threshold):
 
 
     # Calculate RMSE between high and low:
-    rmse = np.sqrt(np.mean((staar_high.facc - staar_low.facc) ** 2))
+    rmse = np.sqrt(np.mean((staar_high.facc_raster - staar_low.facc_raster) ** 2))
     print(f"RMSE between high and low resolution: {rmse:.2f}")
 
     print('\a')

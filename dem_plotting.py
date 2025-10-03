@@ -66,7 +66,6 @@ def plot_flow_direction(flow_dir, output=None):
     plt.imshow(flow_dir, cmap='jet', vmin=0, vmax=255)
     plt.colorbar(label='Flow Direction (D8 Codes)')
     plt.title("Flow Direction Map")
-    plt.axis('off')
     if output is not None:
         plt.savefig(output, bbox_inches='tight')
     else:
