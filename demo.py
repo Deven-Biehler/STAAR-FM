@@ -78,20 +78,21 @@ def main(threshold):
     
     with rasterio.open(dem_path) as src:
         # Define bounding box coordinates (lat/lon)
-        north = 7 + 3/60 + 16/3600  # 7°03'16"N
-        south = 6 + 3/60 + 16/3600  # 6°03'16"N
-        west = -(73 + 19/60 + 45/3600)  # 73°19'45"W
-        east = -(72 + 19/60 + 45/3600)  # 72°19'45"W
-        
-        # window = rasterio.windows.Window(height * (.5 - 1/200), width * (.5 - 1/200), height * 1/100, width * 1/100) # Orginal window from paper
-        window = rasterio.windows.from_bounds(west, south, east, north, src.transform)
+        # north = 7 + 3/60 + 16/3600  # 7°03'16"N
+        # south = 6 + 3/60 + 16/3600  # 6°03'16"N
+        # west = -(73 + 19/60 + 45/3600)  # 73°19'45"W
+        # east = -(72 + 19/60 + 45/3600)  # 72°19'45"W
+
+        height, width = src.height, src.width
+        window = rasterio.windows.Window(height * (.5 - 1/200), width * (.5 - 1/200), height * 1/100, width * 1/100) # Orginal window from paper
+        # window = rasterio.windows.from_bounds(west, south, east, north, src.transform)
         window = window.round(scales[-1])
         new_transform = rasterio.windows.transform(window, src.transform)
         geographic_window = rasterio.windows.bounds(window, src.transform)
         crs = src.crs
         # Plot original DEM
         dem = src.read(1, window=window)
-        rasterio.plot.show(dem, transform=new_transform)
+        # rasterio.plot.show(dem, transform=new_transform)
         save_tif(dem, "out/original_dem.tif", new_transform, crs)
 
     # --------------------------------------------------------------------------------------------------------------------------------------------------------------------------

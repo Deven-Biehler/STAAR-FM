@@ -7,6 +7,7 @@ import numpy as np
 import rasterio
 from matplotlib.colors import LogNorm
 from pysheds.grid import Grid
+from shapely import buffer
 
 class STAAR_Grid:
     """Class to handle dynamic resolution DEM and associated data."""
@@ -21,6 +22,7 @@ class STAAR_Grid:
         self.resolution_map = None
         self.dem = None
         self.dem_grid = None
+        self.bounds = None
         self.load_dem()
     
     def load_dem(self):
@@ -28,6 +30,7 @@ class STAAR_Grid:
 
         self.dem_grid = Grid.from_raster(self.dem_path, window=self.window, affine=self.affine)
         dem_raster = self.dem_grid.read_raster(self.dem_path, window=self.window)
+        self.bounds = self.dem_grid.bbox
 
         # Pre-processing
         pit_filled_dem = self.dem_grid.fill_pits(dem_raster)
@@ -189,20 +192,29 @@ class STAAR_FlowModeling:
         fdir_grid, fdir_raster = self.get_fdir_grid()
         self.flow_network = fdir_grid.extract_river_network(fdir=fdir_raster, mask=mask)
 
+import matplotlib.pyplot as plt
+import matplotlib.patheffects as patheffects
+import numpy as np
+import os
+from matplotlib.colors import LogNorm
+from matplotlib_scalebar.scalebar import ScaleBar
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
+
+
 class STAAR_Plotter:
     def __init__(self, staar_fm):
         self.staar_fm = staar_fm
-
-    def plot_flow_accumulation(self, use_log_scale=True, clip_percentile=99, 
-                          save=False, filename='flow_accumulation.png'):
-        """Plot flow accumulation using rasterio's built-in plotting."""
+        
+    def plot_flow_accumulation(self, use_log_scale=True, clip_percentile=99,
+                              save=False, filename='flow_accumulation.png',
+                              projection=ccrs.PlateCarree(),
+                              title='Flow Accumulation'):
+        """Plot flow accumulation with cartographic features."""
         if self.staar_fm.facc_raster is None:
             raise ValueError("Flow accumulation has not been calculated yet.")
-        from rasterio.plot import show
         
-        fig, ax = plt.subplots(figsize=(12, 8))
-        
-        # Prepare data
         plot_data = self.staar_fm.facc_raster.copy()
         if use_log_scale:
             plot_data[plot_data <= 0] = 1
@@ -210,73 +222,149 @@ class STAAR_Plotter:
         else:
             norm = None
         
-        # Use rasterio's show with the grid's transform
-        im = show(plot_data, transform=self.staar_fm.staar_grid.affine, ax=ax,
-                cmap='Blues', norm=norm)
+        fig = plt.figure(figsize=(12, 8))
+        ax = fig.add_subplot(111, projection=projection)
+
+        bounds = self.staar_fm.staar_grid.bounds
+        extent = [bounds[0], bounds[2], bounds[1], bounds[3]]
+        ax.set_extent(extent, crs=projection)
+
+        im = ax.imshow(plot_data, extent=extent, transform=projection,
+                      cmap='Blues', norm=norm, origin='upper')
         
-        ax.set_xlabel('Longitude')
-        ax.set_ylabel('Latitude')
-        ax.set_title('Flow Accumulation' + (' (log scale)' if use_log_scale else ''))
+        gl = ax.gridlines(draw_labels=True, alpha=0.5, linestyle='--')
+        gl.top_labels = False
+        gl.right_labels = False
+        gl.xlabel_style = {'size': 10}
+        gl.ylabel_style = {'size': 10}
+        gl.xformatter = LONGITUDE_FORMATTER
+        gl.yformatter = LATITUDE_FORMATTER
         
-        # Add colorbar
-        from mpl_toolkits.axes_grid1 import make_axes_locatable
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.1)
-        plt.colorbar(im.get_images()[0], cax=cax, label='Flow Accumulation')
+        center_lat = (extent[2] + extent[3]) / 2
+        meters_per_degree = 111320 * np.cos(np.radians(center_lat))
+        scalebar = ScaleBar(meters_per_degree, location='lower left',
+                           length_fraction=0.25, frameon=True)
+        ax.add_artist(scalebar)
+        
+        ax.set_title(title + (' (log scale)' if use_log_scale else ''), 
+                    fontsize=14, fontweight='bold')
+        
+        plt.colorbar(im, ax=ax, orientation='vertical', pad=0.02, 
+                    shrink=0.8, label='Flow Accumulation')
         
         if save:
             os.makedirs("plots", exist_ok=True)
             plt.savefig(f"plots/{filename}", dpi=300, bbox_inches='tight')
         
         plt.show()
-
-
-    def plot_flow_network(self, save=None, color='blue'):
+    
+    def plot_flow_network(self, save=None, color='blue',
+                         title="Extracted Flow Network",
+                         projection=ccrs.PlateCarree()):
+        """Plot flow network with cartographic features."""
         if self.staar_fm.flow_network is None:
             raise ValueError("Flow network has not been extracted yet.")
-        import matplotlib.pyplot as plt
-
-        plt.figure(figsize=(10, 10))
+        
+        fig = plt.figure(figsize=(12, 10))
+        
+        all_coords = []
+        for feature in self.staar_fm.flow_network['features']:
+            coords = feature['geometry']['coordinates']
+            if feature['geometry']['type'] == 'LineString':
+                all_coords.extend(coords)
+            elif feature['geometry']['type'] == 'MultiLineString':
+                for line in coords:
+                    all_coords.extend(line)
+        
+        xs, ys = zip(*all_coords)
+        bounds = self.staar_fm.staar_grid.bounds
+        extent = [bounds[0], bounds[2], bounds[1], bounds[3]]
+        
+        ax = fig.add_subplot(111, projection=projection)
+        ax.set_extent(extent, crs=projection)
+        
         for feature in self.staar_fm.flow_network['features']:
             coords = feature['geometry']['coordinates']
             if feature['geometry']['type'] == 'LineString':
                 xs, ys = zip(*coords)
-                plt.plot(xs, ys, color=color, linewidth=1)
+                ax.plot(xs, ys, color=color, linewidth=1, transform=projection)
             elif feature['geometry']['type'] == 'MultiLineString':
                 for line in coords:
                     xs, ys = zip(*line)
-                    plt.plot(xs, ys, color='blue', linewidth=1)
-        plt.title("Extracted Flow Network")
-        plt.xlabel("Longitude")
-        plt.ylabel("Latitude")
-        plt.axis('equal')
+                    ax.plot(xs, ys, color=color, linewidth=1, transform=projection)
+
+        gl = ax.gridlines(draw_labels=True, alpha=0.5, linestyle='--')
+        gl.top_labels = False
+        gl.right_labels = False
+        gl.xlabel_style = {'size': 10}
+        gl.ylabel_style = {'size': 10}
+        gl.xformatter = LONGITUDE_FORMATTER
+        gl.yformatter = LATITUDE_FORMATTER
+        
+        center_lat = (extent[2] + extent[3]) / 2
+        meters_per_degree = 111320 * np.cos(np.radians(center_lat))
+        scalebar = ScaleBar(meters_per_degree, location='lower left',
+                           length_fraction=0.25, frameon=True)
+        ax.add_artist(scalebar)
+        
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        
         if save is None:
             plt.show()
         else:
-            plt.savefig(save, bbox_inches='tight')
-
-    def plot_flow_direction(self, save=None):
+            plt.savefig(save, bbox_inches='tight', dpi=300)
+    
+    def plot_flow_direction(self, save=None, 
+                           title="Flow Direction Map",
+                           projection=ccrs.PlateCarree()):
+        """Plot the flow direction map with cartographic features."""
         if self.staar_fm.fdir is None:
             raise ValueError("Flow direction data is not available.")
-        """
-        Plot the flow direction map.
-        """
-        from rasterio.plot import show
-        from mpl_toolkits.axes_grid1 import make_axes_locatable
-    
-        _, ax = plt.subplots(figsize=(12, 8))
-        im = show(self.staar_fm.fdir, transform=self.staar_fm.staar_grid.affine, ax=ax,
-                cmap='jet', vmin=1, vmax=128)
-        plt.title("Flow Direction Map")
-        plt.xlabel('Longitude')
-        plt.ylabel('Latitude')
-    
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.1)
-        plt.colorbar(im.get_images()[0], cax=cax, label='Flow Direction (D8 Codes)')
-    
+        
+        fig = plt.figure(figsize=(12, 8))
+        
+        bounds = self.staar_fm.staar_grid.bounds
+        extent = [bounds[0], bounds[2], bounds[1], bounds[3]]
+        
+        ax = fig.add_subplot(111, projection=projection)
+        ax.set_extent(extent, crs=projection)
+
+        im = ax.imshow(self.staar_fm.fdir, extent=extent, transform=projection,
+                      cmap='jet', vmin=1, vmax=128, origin='upper')
+        
+        gl = ax.gridlines(draw_labels=True, alpha=0.5, linestyle='--')
+        gl.top_labels = False
+        gl.right_labels = False
+        gl.xlabel_style = {'size': 10}
+        gl.ylabel_style = {'size': 10}
+        gl.xformatter = LONGITUDE_FORMATTER
+        gl.yformatter = LATITUDE_FORMATTER
+
+        # Add north arrow
+        # Plot the N arrow
+        right = extent[1] - 0.05 * (extent[1] - extent[0])  # 5% from right edge
+        sbcy = extent[3] - 0.05 * (extent[3] - extent[2])  # 5% from top edge
+        # buffer for text - white outline
+        buffer = [patheffects.withStroke(linewidth=3, foreground="w")]
+        ax.text(right, sbcy, u'\u25B2\nN', transform=projection,
+            horizontalalignment='center', verticalalignment='bottom',
+            path_effects=buffer, zorder=2)
+
+        
+        
+        center_lat = (extent[2] + extent[3]) / 2
+        meters_per_degree = 111320 * np.cos(np.radians(center_lat))
+        scalebar = ScaleBar(meters_per_degree, location='lower right',
+                           length_fraction=0.25, frameon=True)
+        ax.add_artist(scalebar)
+        
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        
+        plt.colorbar(im, ax=ax, orientation='vertical', pad=0.02,
+                    shrink=0.8, label='Flow Direction (D8 Codes)')
+        
         if save:
             os.makedirs("plots", exist_ok=True)
             plt.savefig(f"plots/{save}", dpi=300, bbox_inches='tight')
-    
+        
         plt.show()
